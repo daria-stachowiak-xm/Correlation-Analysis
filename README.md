@@ -1,7 +1,7 @@
 # Correlation Lab
 
 A Streamlit app for comparing marketing data from different tools. Upload spreadsheets and it
-matches series by name and date, builds share metrics (Share of Search, Share of Conversation,
+lines the series up by date, builds share metrics (Share of Search, Share of Conversation,
 Share of Voice), and shows which series move together and how strongly. Results are described in
 everyday language, so you don't need a statistics background to use it.
 
@@ -19,22 +19,27 @@ files replaces it.
 
 **1. Upload data.** CSV, TSV and Excel files are supported, and each Excel tab is read separately.
 The date column is detected automatically. Headers that span several rows are handled, and dates
-can be in formats such as `2026-08-31`, `8/31/26`, `Apr'23`, `Apr 2023` or `2026-Q3`. Summary
+can be in formats such as `2026-08-31`, `8/31/26`, `31/08/2026`, `Apr'23`, `Apr 2023` or `2026-Q3`.
+For dates like `05/01/2026`, the app decides once per column whether the day or the month comes
+first. If every date fits both readings, it assumes month first and lets you switch. Summary
 tabs (for example MyTelescope's "Pie Chart") are skipped, and the app says why. Long tables, with
 one row per brand, channel or market, are split into separate series. You choose the split and any
 filters.
 
 **2. Align.** All series are rolled up to one calendar (weekly, monthly or quarterly). Counts and
-spend are summed; rates and scores are averaged. Partly covered periods at the start and end of a
-series are dropped, as are unfinished or forecast periods. A processing log records each step, and
+spend are summed; rates and scores are averaged. When weekly data is rolled up to months or
+quarters, each week is spread over its 7 days first, so a week that crosses a month boundary is
+split between the two and 5-week months don't look bigger than 4-week ones. Partly covered periods
+are dropped, as are unfinished or forecast periods. A processing log records each step, and
 a coverage chart shows the date range of every series.
 
 **3. Create share series.** One-click suggestions for Share of Search, Conversation and Voice,
 plus a builder for any group of series.
 
-**4. Select and rename.** Choose which series to include and rename them so they match across
-files ("Hellman's" and "Hellmann's", for example). You can also switch a series between summing
-and averaging.
+**4. Select and rename.** Choose which series to include and give them clear names, for example
+the same brand spelling in every file ("Hellmann's" everywhere, rather than "Hellman's" in one
+file). Series are never merged, so each needs its own name; if a name is taken, the source is
+added in brackets. You can also switch a series between summing and averaging.
 
 **5. Goal metric and findings.** Pick the metric you care about. Every other series is ranked by
 its correlation with it, and summary cards flag leading indicators, trends, shared trends and
@@ -43,6 +48,13 @@ small samples.
 **6. Matrix and pair detail.** A clickable correlation matrix. For the selected pair the app
 shows r, r², the p-value and n with a short explanation of each, plus a scatter plot, both series
 over time and a lead/lag check. Results download as CSV files or a single Excel workbook.
+
+**About the p-values.** Marketing series carry over from one period to the next, so n months hold
+less information than n independent points, and textbook p-values look too good. The app reduces
+n to an effective sample size before computing p, using each series' correlation with its own
+previous value. The pair detail shows roughly how many independent periods a pair is worth. When
+many pairs are checked, a findings card estimates how many could pass p < 0.05 by luck, and a
+leading indicator must clear a stricter bar because three lags are tried.
 
 ## Files
 
@@ -101,5 +113,7 @@ Uploaded data is held only in the user's session and is never written to disk.
 - Tables that stack several dimensions without a "Total" row (local and national spend in one
   file, for example) can double-count. Set a filter in step 1 to avoid this.
 - Large Excel files (10 MB and up) take several seconds to read. Each file is parsed once per
-  upload.
+  upload, and results are reused until a setting or selection changes.
+- Weekly dates are treated as the first day of the week. Exports labelled by week ending are
+  shifted by up to six days, which matters little at monthly grain.
 - Correlation does not show causation. Use the results to decide what to test.

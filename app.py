@@ -6,6 +6,7 @@ Run with:  streamlit run app.py
 """
 from __future__ import annotations
 
+import html
 import io
 import uuid
 
@@ -78,6 +79,21 @@ def load_sample():
         S.target = S.names.get(orders.key, orders.base)
 
 
+def memo(slot: str, sig, fn):
+    """Reuse the last result in `slot` while `sig` is unchanged.
+
+    Streamlit reruns the whole script on every click, so without this the
+    alignment, correlations and Excel file would be rebuilt each time.
+    """
+    box = S.setdefault("_memo", {})
+    hit = box.get(slot)
+    if hit is not None and hit[0] == sig:
+        return hit[1]
+    val = fn()
+    box[slot] = (sig, val)
+    return val
+
+
 def init_meta(series):
     """Give any new series a display name, a way to combine it, and an on/off switch."""
     on = sum(1 for v in S.include.values() if v)
@@ -104,7 +120,7 @@ left, right = st.columns([1.35, 1])
 with left:
     st.markdown("<div class='step-no'>Correlation Lab</div>", unsafe_allow_html=True)
     st.title("Which metrics move together")
-    st.markdown("<p class='why'>Upload exports from different tools. The app matches series by name and date, "
+    st.markdown("<p class='why'>Upload exports from different tools. The app lines the series up by date, "
                 "builds share metrics such as Share of Search, and reports which series are correlated and how "
                 "strongly.</p>", unsafe_allow_html=True)
 with right:
@@ -178,6 +194,15 @@ for t in S.tables:
             f"{len(t.frame):,} rows | {t.frame['__date'].min():%b %Y} to {t.frame['__date'].max():%b %Y}"
             f"{' | example' if t.sample else ''}")
     with st.expander(head, expanded=False):
+        if t.date_order == "mdy-assumed":
+            opts = ["Month first (05/01 = May 1)", "Day first (05/01 = 5 January)"]
+            pick = st.radio("Dates like 05/01/2026 mean", opts, index=1 if t.day_first else 0,
+                            key=f"do{t.tid}", horizontal=True,
+                            help="Every date in this table fits both readings, so the app can't tell which one "
+                                 "the export uses.")
+            if (pick == opts[1]) != t.day_first:
+                cl.set_day_first(t, pick == opts[1])
+                st.rerun()
         if t.long and t.text_cols:
             names = [c["name"] for c in t.text_cols]
             picked = st.multiselect("Split into separate series by", names,
@@ -203,7 +228,9 @@ for t in S.tables:
             S.tables.remove(t)
             st.rerun()
 
-series = cl.build_series(S.tables)
+table_sig = tuple((t.tid, t.skip, tuple(t.split), tuple(sorted(t.filters.items())), tuple(t.use_num), t.day_first)
+                  for t in S.tables)
+series = memo("series", table_sig, lambda: cl.build_series(S.tables))
 init_meta(series)
 key_of = {S.names[s.key]: s.key for s in series}
 
@@ -238,9 +265,12 @@ with c5:
     exclude_future = st.checkbox("Leave out unfinished periods", value=True,
                                  help="Some exports include forecasts for future months. Those aren't real data.")
 
-res = cl.align_and_correlate(series, S.names, S.aggs, S.include, S.groups,
-                             grain=grain, mode=mode, method=method, overlap=overlap,
-                             exclude_future=exclude_future)
+res_sig = (table_sig, tuple(sorted(S.names.items())), tuple(sorted(S.aggs.items())),
+           tuple(sorted(S.include.items())), tuple((g.gid, g.label, tuple(g.members)) for g in S.groups),
+           grain, mode, method, overlap, exclude_future, pd.Timestamp.now().date())
+res = memo("res", res_sig, lambda: cl.align_and_correlate(
+    series, S.names, S.aggs, S.include, S.groups, grain=grain, mode=mode, method=method,
+    overlap=overlap, exclude_future=exclude_future))
 labels = list(res.matrix.columns)
 G = cl.GRAIN_NOUN[res.grain]
 
@@ -249,8 +279,9 @@ with log_col:
     st.subheader("Processing log")
     tag = {"info": "Note", "did": "Done", "warn": "Check"}
     for entry in res.log:
-        st.markdown(f"<span class='tag {entry['kind']}'>{tag[entry['kind']]}</span>{entry['text']}",
-                    unsafe_allow_html=True)
+        # log lines contain file, sheet and column names from uploads, so escape them
+        st.markdown(f"<span class='tag {entry['kind']}'>{tag[entry['kind']]}</span>"
+                    f"{html.escape(entry['text'], quote=False)}", unsafe_allow_html=True)
 with cov_col:
     st.subheader("When each series has data")
     st.caption("Dark bars are uploaded series; red bars are shares created in step 3. The shaded band is the "
@@ -299,7 +330,10 @@ if sugg:
 for g in S.groups:
     c1, c2, c3 = st.columns([2, 5, 1])
     with c1:
-        g.label = st.text_input("Share of", g.label, key=f"gl{g.gid}", label_visibility="collapsed")
+        new_label = st.text_input("Share of", g.label, key=f"gl{g.gid}", label_visibility="collapsed")
+        if new_label != g.label:           # the results above were built with the old label
+            g.label = new_label
+            st.rerun()
     with c2:
         st.caption(f"{len(g.members)} series: " + ", ".join(S.names.get(k, k) for k in g.members)[:110])
     with c3:
@@ -318,10 +352,11 @@ with st.expander("Build a share from any series you pick"):
 st.divider()
 st.markdown("<div class='step-no'>Step 4</div>", unsafe_allow_html=True)
 st.header("Choose and rename series")
-st.markdown("<p class='why'>Tick the series to include and <b>rename them so names match across files</b>. If one "
-            "file says \"Hellman's\" and another says \"Hellmann's\", give both the same name. When periods are "
-            "rolled up, counts and spend are summed; rates, scores and percentages are averaged.</p>",
-            unsafe_allow_html=True)
+st.markdown("<p class='why'>Tick the series to include and <b>give them clear, consistent names</b>. If one file "
+            "says \"Hellman's\" and another says \"Hellmann's\", use the same spelling in both so related series are "
+            "easy to spot in the charts. Each series keeps its own name: series are never merged, so if you choose "
+            "a name that's already taken, the source is added in brackets. When periods are rolled up, counts and "
+            "spend are summed; rates, scores and percentages are averaged.</p>", unsafe_allow_html=True)
 
 editor_df = pd.DataFrame([{
     "Use": S.include.get(s.key, False),
@@ -344,8 +379,10 @@ if len(editor_df):
             "Values": st.column_config.TextColumn(disabled=True, width="small"),
             "Covers": st.column_config.TextColumn(disabled=True),
             "_key": None,
-        }, key="series_editor")
+        }, key=f"series_editor{S.get('editor_ver', 0)}")
     changed = False
+    owner = {S.names[s.key]: s.key for s in series}
+    tag_of = {s.key: s.table.tag for s in series}
     for _, row in edited.iterrows():
         k = row["_key"]
         if S.include.get(k) != bool(row["Use"]):
@@ -353,15 +390,26 @@ if len(editor_df):
             changed = True
         new_name = str(row["Name"]).strip()
         if new_name and S.names.get(k) != new_name:
-            S.names[k] = new_name
-            changed = True
+            if owner.get(new_name, k) != k:          # another series already has this name
+                typed, new_name = new_name, f"{new_name} ({tag_of[k]})"
+                if S.names.get(k) != new_name:
+                    S.flash = (f"\"{typed}\" is already used by another series, so this one was named "
+                               f"\"{new_name}\". Series are never merged; each one needs its own name.")
+                    S.editor_ver = S.get("editor_ver", 0) + 1     # redraw the table with the real names
+            if S.names.get(k) != new_name:
+                owner.pop(S.names.get(k), None)
+                owner[new_name] = k
+                S.names[k] = new_name
+                changed = True
         agg = "mean" if row["Combine by"] == "Average" else "sum"
         if S.aggs.get(k) != agg:
             S.aggs[k] = agg
             changed = True
     if changed:
         st.rerun()
-    n_on = sum(1 for x in series if S.include.get(x.key))
+    if S.get("flash"):
+        st.warning(S.pop("flash"))
+    n_on =sum(1 for x in series if S.include.get(x.key))
     n_created = sum(1 for l in labels if res.meta.get(l, {}).get("share"))
     st.caption(f"{n_on} of {len(series)} uploaded series included"
                + (f", plus {n_created} created in step 3." if n_created else "."))
@@ -407,7 +455,9 @@ with rank_col:
     else:
         st.info("Select at least two series with overlapping dates.")
 with card_col:
-    for card in (cl.findings(res, target_key, method, mode) if labels else []):
+    cards = memo("cards", (res_sig, target_key),
+                 lambda: cl.findings(res, target_key, method, mode) if labels else [])
+    for card in cards:
         with st.container(border=True):
             st.markdown(f"<div class='k'>{card['kind']}</div>", unsafe_allow_html=True)
             if card["tone"] == "warn":
@@ -470,7 +520,7 @@ if len(labels) >= 2:
         b = st.selectbox("Series B", labels, index=labels.index(S.pair[1]))
     S.pair = (a, b)
 
-    r, n, p = cl.corr_pair(res.values[a], res.values[b], method=method)
+    r, n, p, n_eff = cl.corr_pair(res.values[a], res.values[b], method=method, full=True)
     if not np.isfinite(r):
         st.warning(f"These two only overlap for {n} {G}s, which isn't enough to compare.")
     else:
@@ -481,9 +531,11 @@ if len(labels) >= 2:
             (s1, "r", f"{r:+.2f}", f"{cl.strength_word(r).replace('a ', '').replace('an ', '')}"
                                    f"{', same direction' if r > 0 else ', opposite directions' if abs(r) >= .1 else ''}"),
             (s2, "r²", f"{round(r*r*100)}%", "of the variation is shared"),
-            (s3, "p-value", f"{p:.3f}" if p >= 0.001 else "<0.001",
+            (s3, "p-value", "-" if not np.isfinite(p) else f"{p:.3f}" if p >= 0.001 else "<0.001",
+             "too little data to judge" if not np.isfinite(p) else
              "probably not chance" if p < 0.05 else "could be chance"),
-            (s4, "n", f"{n}", f"{G}s compared")]:
+            (s4, "n", f"{n}", f"{G}s compared"
+             + (f", worth about {n_eff:.0f} independent ones" if np.isfinite(n_eff) and n_eff < n - 0.5 else ""))]:
             col.markdown(f"<div class='stat'><div class='l'>{l}</div><div class='v'>{v}</div>"
                          f"<div class='d'>{d}</div></div>", unsafe_allow_html=True)
 
@@ -575,15 +627,18 @@ if len(labels) >= 2:
                        width="stretch")
     d2.download_button("Correlation matrix (CSV)", res.matrix.round(3).to_csv().encode(),
                        "correlation_matrix.csv", "text/csv", width="stretch")
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        aligned.to_excel(xw, sheet_name="Aligned data")
-        res.matrix.round(3).to_excel(xw, sheet_name="r")
-        res.nmat.to_excel(xw, sheet_name="n (periods)")
-        res.pmat.round(4).to_excel(xw, sheet_name="p-values")
-        pd.DataFrame([{"Pair": f"{i['a']} vs {i['b']}", "r": round(i["r"], 3), "n": i["n"],
-                       "p": round(i["p"], 4)} for i in items]).to_excel(xw, sheet_name="Ranked pairs", index=False)
-    d3.download_button("All results (Excel)", buf.getvalue(), "correlation_lab.xlsx",
+    def workbook() -> bytes:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+            aligned.to_excel(xw, sheet_name="Aligned data")
+            res.matrix.round(3).to_excel(xw, sheet_name="r")
+            res.nmat.to_excel(xw, sheet_name="n (periods)")
+            res.pmat.round(4).to_excel(xw, sheet_name="p-values")
+            pd.DataFrame([{"Pair": f"{i['a']} vs {i['b']}", "r": round(i["r"], 3), "n": i["n"],
+                           "p": round(i["p"], 4)} for i in items]).to_excel(xw, sheet_name="Ranked pairs", index=False)
+        return buf.getvalue()
+
+    d3.download_button("All results (Excel)", memo("xlsx", (res_sig, target_key), workbook), "correlation_lab.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 else:
     st.info("The matrix appears once at least two series are selected.")
@@ -599,8 +654,13 @@ gloss = {
     "r² (r-squared)": "r multiplied by itself, read as a percentage. r = 0.7 gives r² = 0.49, so about half of one "
                       "number's ups and downs line up with the other's.",
     "p-value": "How likely a pattern this strong would appear by pure luck if there were no real link. Below 0.05 is "
-               "the usual bar for \"probably real\". With few data points, even a big r can fail it.",
-    "n": "How many periods were used for a pair. Under about 12, treat results as hints, not proof.",
+               "the usual bar for \"probably real\". With few data points, even a big r can fail it. Marketing "
+               "numbers carry over from one period to the next, which makes ordinary p-values look too good, so "
+               "the app adjusts for that. When many pairs are checked, about 1 in 20 unrelated ones still pass "
+               "by luck.",
+    "n": "How many periods were used for a pair. Under about 12, treat results as hints, not proof. When a series "
+         "carries over from one period to the next, its periods are worth fewer independent points; the pair "
+         "detail shows roughly how many.",
     "Lag / lead": "One thing may affect another later, e.g. ad spend this month raising searches next month. A lead "
                   "shows up when the correlation gets stronger after shifting one series.",
     "Share of Search / Conversation / Voice": "A brand's number divided by the category total in each period: search "

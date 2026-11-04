@@ -41,8 +41,16 @@ GRAIN_NOUN = {"day": "day", "week": "week", "month": "month", "quarter": "quarte
 PANDAS_FREQ = {"day": "D", "week": "W-SUN", "month": "M", "quarter": "Q", "year": "Y"}
 
 
-def parse_date(v, allow_num: bool = False):
-    """Turn almost anything that looks like a date into a pandas Timestamp."""
+SLASH_DATE = re.compile(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?: .*)?$")
+
+
+def parse_date(v, allow_num: bool = False, dayfirst: bool | None = None):
+    """Turn almost anything that looks like a date into a pandas Timestamp.
+
+    `dayfirst` decides how 05/01/2026 is read: True for day/month/year, False for
+    month/day/year. None guesses cell by cell, which is only safe for detection;
+    analyze_grid settles the order once for the whole date column.
+    """
     if v is None:
         return None
     if isinstance(v, float) and math.isnan(v):
@@ -76,10 +84,10 @@ def parse_date(v, allow_num: bool = False):
     m = re.match(r"^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?(?:[T ].*)?$", s)
     if m:
         return mk(m.group(1), int(m.group(2)), int(m.group(3) or 1))
-    m = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?: .*)?$", s)
-    if m:                                   # US style month/day/year
+    m = SLASH_DATE.match(s)
+    if m:                                   # month/day/year or day/month/year
         a, b = int(m.group(1)), int(m.group(2))
-        if a > 12:
+        if dayfirst is True or (dayfirst is None and a > 12):
             a, b = b, a
         return mk(m.group(3), a, b)
     m = re.match(r"^([A-Za-z]{3,9})\.?[\s'’\-_.,]*(\d{2}|\d{4})$", s)   # Apr'23, Apr 2023
@@ -98,6 +106,53 @@ def parse_date(v, allow_num: bool = False):
     if m:
         return mk(m.group(2), (int(m.group(1)) - 1) * 3 + 1, 1)
     return None
+
+
+def slash_order(values) -> str | None:
+    """Decide how a column of 05/01/2026-style dates should be read.
+
+    Returns 'dmy' if any first number is above 12, 'mdy' if any second number is,
+    'mixed' if both happen (the column is inconsistent), 'mdy-assumed' if every
+    date fits both readings, and None if the column has no dates in this style.
+    """
+    firsts, seconds = set(), set()
+    for v in values:
+        if not isinstance(v, str):
+            continue
+        m = SLASH_DATE.match(v.strip())
+        if not m:
+            continue
+        firsts.add(int(m.group(1)))
+        seconds.add(int(m.group(2)))
+    if not firsts:
+        return None
+    first_big, second_big = max(firsts) > 12, max(seconds) > 12
+    if first_big and not second_big:
+        return "dmy"
+    if second_big and not first_big:
+        return "mdy"
+    if first_big and second_big:
+        return "mixed"
+    # monthly data dated on the 1st: the part that never changes is the day
+    if len(seconds) == 1 and len(firsts) > 1:
+        return "mdy"
+    if len(firsts) == 1 and len(seconds) > 1:
+        return "dmy"
+    return "mdy-assumed"
+
+
+def set_day_first(t: "Table", dayfirst: bool) -> None:
+    """Re-read a table's ambiguous dates as day/month (True) or month/day (False).
+
+    Only used when slash_order() returned 'mdy-assumed', where every date has both
+    numbers at 12 or below, so swapping month and day always gives a valid date.
+    """
+    if t.frame is None or t.date_order != "mdy-assumed" or t.day_first == dayfirst:
+        return
+    d = pd.to_datetime(t.frame["__date"])
+    t.frame["__date"] = [pd.Timestamp(year=x.year, month=x.day, day=x.month) for x in d]
+    t.freq = detect_freq(list(t.frame["__date"]))
+    t.day_first = dayfirst
 
 
 def to_num(v):
@@ -178,9 +233,9 @@ def p_words(p: float, n: int) -> str:
     if p is None or not np.isfinite(p):
         return "not enough data to judge"
     if p < 0.01:
-        return "very unlikely to be a fluke"
+        return "unlikely to be chance alone"
     if p < 0.05:
-        return "unlikely to be a fluke"
+        return "probably not chance, but worth confirming"
     if p < 0.1:
         return "borderline: it could be chance"
     return "could easily be chance, especially with so few points" if n < 12 else "could easily be chance"
@@ -205,6 +260,8 @@ class Table:
     long: bool = False
     freq: str = "month"
     suffix_note: str | None = None
+    date_order: str | None = None                    # see slash_order()
+    day_first: bool = False                          # how 05/01/2026 is currently read
     # user settings
     split: list = field(default_factory=list)        # indices into text_cols
     filters: dict = field(default_factory=dict)      # text col index -> value or '__all'
@@ -272,9 +329,14 @@ def analyze_grid(tid: str, file: str, sheet: str | None, grid: list[list], sampl
         return t
     _, dc, start, allow_num = best
 
+    # read 05/01/2026-style dates the same way down the whole column
+    t.date_order = slash_order(r[dc] for r in rows[start:])
+    dayfirst = {"dmy": True, "mdy": False, "mdy-assumed": False}.get(t.date_order)
+    t.day_first = t.date_order == "dmy"
+
     data_rows, dates = [], []
     for r in rows[start:]:
-        d = parse_date(r[dc], allow_num)
+        d = parse_date(r[dc], allow_num, dayfirst)
         if d is not None:
             data_rows.append(r)
             dates.append(d)
@@ -478,6 +540,29 @@ class Result:
     common: tuple | None
 
 
+def spread_weeks(data: pd.Series, agg: str, pfreq: str) -> tuple[pd.Series, pd.Series]:
+    """Roll weekly values up to a longer period, splitting weeks that cross a boundary.
+
+    Each value is treated as covering 7 days from its date. For totals, a seventh
+    goes to each day; for averages, each day gets the weekly value. Returns the
+    rolled-up values and the share of each period's days that had data (0 to 1).
+    """
+    d = data.dropna()
+    if d.empty:
+        empty = pd.Series(dtype=float, index=pd.PeriodIndex([], freq=pfreq))
+        return empty, empty
+    starts = d.index.values.astype("datetime64[D]")
+    days = np.repeat(starts, 7) + np.tile(np.arange(7), len(d)).astype("timedelta64[D]")
+    per_day = np.repeat(d.values.astype(float) / (7 if agg == "sum" else 1), 7)
+    daily = pd.Series(per_day, index=pd.DatetimeIndex(days))
+    daily = daily.groupby(level=0).sum() if agg == "sum" else daily.groupby(level=0).mean()
+    g = daily.groupby(daily.index.to_period(pfreq))
+    vals = g.sum() if agg == "sum" else g.mean()
+    ndays = np.asarray((vals.index.end_time - vals.index.start_time).days) + 1
+    cover = g.size() / ndays
+    return vals, cover
+
+
 def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: dict,
                         groups: list[ShareGroup], grain: str = "auto", mode: str = "level",
                         method: str = "pearson", overlap: str = "pair",
@@ -514,6 +599,18 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
     if sufs:
         extra = f" (and similar in {len(sufs)-1} other table{'s' if len(sufs) > 2 else ''})" if len(sufs) > 1 else ""
         log.append({"kind": "did", "text": f'Removed the repeated ending "{sufs[0].suffix_note}" from series names{extra}.'})
+    for t in tables.values():
+        if t.date_order == "dmy":
+            log.append({"kind": "did", "text": f"Dates in **{t.label}** were read as **day/month/year**."})
+        elif t.date_order == "mdy-assumed":
+            how = "day/month/year" if t.day_first else "month/day/year"
+            log.append({"kind": "warn", "text":
+                        f"Dates in **{t.label}** fit both day/month and month/day, so they were read as **{how}**. "
+                        f"If that's wrong, change it under the table in step 1."})
+        elif t.date_order == "mixed":
+            log.append({"kind": "warn", "text":
+                        f"Dates in **{t.label}** mix day/month and month/day order, so some may be read wrongly. "
+                        f"Check the export."})
 
     if grain == "auto":
         grain = max((s.freq for s in basis), key=GRAIN_ORDER.index) if basis else "month"
@@ -525,11 +622,29 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
     partial, future = [], set()
     for s in series:
         idx = s.data.index
+        agg = aggs.get(s.key, default_agg(s.base))
+        if s.freq == "week" and grain in ("month", "quarter", "year"):
+            # Weeks don't fit evenly into months, so spread each week over its days
+            # first. Otherwise a 5-week month looks about 25% bigger than a 4-week one.
+            vals, cover = spread_weeks(s.data, agg, pfreq)
+            # a total is only right if the whole period is covered; an average
+            # can tolerate a few missing days
+            low = cover[cover < (0.999 if agg == "sum" else 0.75)].index
+            if len(low):
+                vals = vals.drop(low)
+                if include.get(s.key):
+                    partial.extend((s.key, p) for p in low)
+            if exclude_future:
+                late = [p for p in vals.index if p.end_time > now]
+                if late:
+                    future.update(late)
+                    vals = vals.drop(late)
+            buckets[s.key] = vals
+            continue
         if grain == "week":
             per = (idx + pd.Timedelta(days=1)).to_period(pfreq)
         else:
             per = idx.to_period(pfreq)
-        agg = aggs.get(s.key, default_agg(s.base))
         g = s.data.groupby(per)
         vals = g.mean() if agg == "mean" else g.sum()
         counts = g.size()
@@ -561,7 +676,6 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
             label = f"Share of {g.label}: {name_of[k]}"
             buckets[label] = (frame[name_of[k]] / total * 100).dropna()
             name_of[label] = label
-            include[label] = include.get(label, True)
             share_meta[label] = {"share": True, "derived_from": name_of[k], "group": g.gid}
         log.append({"kind": "did",
                     "text": f"Created **Share of {g.label}**: each of the {len(members)} series as a % of their "
@@ -579,13 +693,16 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
     if grain == "week":
         log.append({"kind": "info", "text": "Weeks that start on a Sunday and weeks that start on a Monday are treated as the same week."})
     elif any(s.freq == "week" for s in basis):
-        log.append({"kind": "info", "text": f"Each week counts toward the {GRAIN_NOUN[grain]} it starts in."})
+        log.append({"kind": "did", "text":
+                    f"Weekly values were spread evenly over the 7 days from each date, so a week that crosses into "
+                    f"the next {GRAIN_NOUN[grain]} is split between the two. This stops {GRAIN_NOUN[grain]}s with "
+                    f"5 weeks from looking bigger than those with 4."})
     if partial:
         ex = "; ".join(f"{period_label(p, grain)} for {name_of[k][:40]}" for k, p in partial[:3])
         log.append({"kind": "warn", "text":
-                    f"Dropped {len(partial)} half-covered period{'' if len(partial) == 1 else 's'} at the start or end "
-                    f"of a series, where the data only covered part of the {GRAIN_NOUN[grain]}. Keeping them would make "
-                    f"the total look falsely low. ({ex}{'...' if len(partial) > 3 else ''})"})
+                    f"Dropped {len(partial)} partly covered period{'' if len(partial) == 1 else 's'}, where the data "
+                    f"only covered part of the {GRAIN_NOUN[grain]}, usually at the start or end of a series. Keeping "
+                    f"them would make totals look falsely low. ({ex}{'...' if len(partial) > 3 else ''})"})
     if future:
         fs = sorted(future)
         log.append({"kind": "warn", "text":
@@ -685,19 +802,61 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
     return Result(grain, levels.index, levels, values, pct, log, m, nn, pp, meta, common)
 
 
-def corr_pair(a: pd.Series, b: pd.Series, lag: int = 0, method: str = "pearson"):
-    """r, n and p for one pair. lag>0 shifts `a` earlier, i.e. a leads b."""
+def effective_n(x, y) -> float:
+    """How many independent periods a pair is really worth.
+
+    Marketing series carry over from one period to the next (a high month is
+    usually followed by another high month), so n periods hold less information
+    than n independent points. This uses the standard lag-1 adjustment
+    n * (1 - r1x*r1y) / (1 + r1x*r1y), where r1 is each series' correlation with
+    its own previous value.
+    """
+    n = len(x)
+    if n < 5:
+        return float(n)
+    r1x = pd.Series(x).autocorr(1)
+    r1y = pd.Series(y).autocorr(1)
+    rho = (r1x if np.isfinite(r1x) else 0.0) * (r1y if np.isfinite(r1y) else 0.0)
+    if rho <= 0:
+        return float(n)
+    return float(min(n, max(3.0, n * (1 - rho) / (1 + rho))))
+
+
+def corr_pair(a: pd.Series, b: pd.Series, lag: int = 0, method: str = "pearson", full: bool = False):
+    """r, n and p for one pair. lag>0 shifts `a` earlier, i.e. a leads b.
+
+    The p-value is adjusted for carry-over between periods (see effective_n), so
+    it is larger, and more honest, than a textbook p-value. With full=True the
+    effective n is returned as a fourth value.
+    """
     x = a.shift(lag) if lag else a
     d = pd.concat([x, b], axis=1).dropna()
     d.columns = ["x", "y"]
-    if len(d) < 3 or d["x"].std() == 0 or d["y"].std() == 0:
-        return np.nan, len(d), np.nan
-    fn = stats.spearmanr if method == "spearman" else stats.pearsonr
+    n = len(d)
+    bad = (np.nan, n, np.nan, np.nan) if full else (np.nan, n, np.nan)
+    if n < 3 or d["x"].std() == 0 or d["y"].std() == 0:
+        return bad
+    xv, yv = d["x"].values, d["y"].values
     try:
-        r, p = fn(d["x"].values, d["y"].values)
+        if method == "spearman":
+            r = stats.spearmanr(xv, yv)[0]
+            xv, yv = stats.rankdata(xv), stats.rankdata(yv)
+        else:
+            r = stats.pearsonr(xv, yv)[0]
     except Exception:
-        return np.nan, len(d), np.nan
-    return float(r), len(d), float(p)
+        return bad
+    r = float(r)
+    if not np.isfinite(r):
+        return bad
+    ne = effective_n(xv, yv)
+    df = ne - 2
+    if df <= 0:
+        p = np.nan
+    elif abs(r) >= 1:
+        p = 0.0
+    else:
+        p = float(2 * stats.t.sf(abs(r) * math.sqrt(df / (1 - r * r)), df))
+    return (r, n, p, ne) if full else (r, n, p)
 
 
 def pair_points(res: Result, a: str, b: str):
@@ -760,6 +919,13 @@ def findings(res: Result, target: str | None, method: str, mode: str) -> list[di
                     f"{'When one goes up, the other usually goes up too.' if it['r'] > 0 else 'When one goes up, the other usually goes down.'} "
                     f"About **{round(it['r']**2*100)}%** of the variation is shared (r²). With {it['n']} {G}s of data, "
                     f"it's {p_words(it['p'], it['n'])}."})
+        tested = sum(1 for i in items if np.isfinite(i["p"]))
+        flukes = round(tested * 0.05)
+        if flukes >= 1:
+            out.append({"kind": "Many comparisons", "tone": "plain", "text":
+                        f"{tested} pairs were checked. Even if none of them were really linked, about {flukes} would "
+                        f"pass the usual p < 0.05 bar by luck, so the top of this list will include some flukes. Trust "
+                        f"the links that also make business sense and still show up when you compare % change."})
 
     if target and target in res.values.columns:
         leads = []
@@ -774,7 +940,9 @@ def findings(res: Result, target: str | None, method: str, mode: str) -> list[di
                 r, n, p = corr_pair(res.values[a], res.values[target], lag=L, method=method)
                 if n >= 6 and np.isfinite(r) and (best is None or abs(r) > abs(best[0])):
                     best = (r, n, p, L)
-            if best and abs(best[0]) >= 0.5 and best[2] < 0.05 and abs(best[0]) > abs(r0) + 0.15:
+            # three lags were tried, so the best one needs to clear a 3x stricter bar
+            if (best and abs(best[0]) >= 0.5 and np.isfinite(best[2]) and best[2] < 0.05 / 3
+                    and abs(best[0]) > abs(r0) + 0.15):
                 leads.append((a, best, r0))
         leads.sort(key=lambda t: -abs(t[1][0]))
         for a, (r, n, p, L) in [(x[0], x[1]) for x in leads[:2]]:
