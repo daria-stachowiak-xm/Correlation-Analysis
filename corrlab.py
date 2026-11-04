@@ -1,11 +1,8 @@
 """
-Correlation Lab - engine.
+Correlation Lab engine.
 
-Everything that is not user interface lives here: reading messy spreadsheets,
-working out which column holds the dates, lining several tables up on one
-calendar, building share-of series, and measuring correlation.
-
-The UI (app.py) only calls the functions in this file.
+File reading, date detection, alignment to a shared calendar, share-of
+series and correlation. No Streamlit imports; app.py calls into this module.
 """
 from __future__ import annotations
 
@@ -126,9 +123,9 @@ def to_num(v):
 
 
 def period_label(p, grain: str) -> str:
-    """'Week of Sep 28, 2026', 'Aug 2026', 'Q3 2026' - never pandas' raw period text."""
+    """Readable period label, e.g. 'Week of Sep 28, 2026', 'Aug 2026', 'Q3 2026'."""
     if p is None:
-        return "–"
+        return "-"
     try:
         start = p.start_time
     except AttributeError:
@@ -156,7 +153,7 @@ def detect_freq(dates: list) -> str:
 
 def fmt_num(v) -> str:
     if v is None or not np.isfinite(v):
-        return "–"
+        return "-"
     a = abs(v)
     if a >= 1e9:
         return f"{v/1e9:.1f}B"
@@ -195,7 +192,7 @@ def p_words(p: float, n: int) -> str:
 
 @dataclass
 class Table:
-    """One sheet or CSV, after we have worked out its shape."""
+    """One sheet or CSV file, after its layout has been detected."""
     tid: str
     file: str
     sheet: str | None
@@ -215,7 +212,7 @@ class Table:
 
     @property
     def label(self) -> str:
-        return f"{self.file} › {self.sheet}" if self.sheet else self.file
+        return f"{self.file} / {self.sheet}" if self.sheet else self.file
 
     @property
     def tag(self) -> str:
@@ -241,7 +238,7 @@ def read_upload(name: str, data: bytes) -> list[tuple[str, str | None, list[list
 
 
 def analyze_grid(tid: str, file: str, sheet: str | None, grid: list[list], sample=False) -> Table:
-    """Work out where the dates are, which columns are numbers, and what each series is called."""
+    """Find the date column, the numeric columns and a name for each series."""
     t = Table(tid=tid, file=file, sheet=sheet, sample=sample)
     rows = [r for r in grid if r is not None and any(c is not None and c != "" for c in r)]
     if len(rows) < 4:
@@ -271,7 +268,7 @@ def analyze_grid(tid: str, file: str, sheet: str | None, grid: list[list], sampl
             if best is None or score > best[0]:
                 best = (score, c, first, allow_num)
     if best is None:
-        t.skip = "I couldn't find a column of dates, so this table can't be lined up in time."
+        t.skip = "No date column found, so this table can't be aligned in time."
         return t
     _, dc, start, allow_num = best
 
@@ -339,14 +336,14 @@ def analyze_grid(tid: str, file: str, sheet: str | None, grid: list[list], sampl
         for c in num_idx:
             if len(num_toks[c]) > 1:
                 num_toks[c] = [x for x in num_toks[c] if x not in common] or num_toks[c]
-    num_names = {c: " · ".join(num_toks[c]) or f"Column {c+1}" for c in num_idx}
-    text_names = {c: " · ".join(name_of(c)) or f"Column {c+1}" for c in text_idx}
+    num_names = {c: " - ".join(num_toks[c]) or f"Column {c+1}" for c in num_idx}
+    text_names = {c: " - ".join(name_of(c)) or f"Column {c+1}" for c in text_idx}
     date_toks = name_of(dc)
     t.date_name = date_toks[-1] if date_toks else "Date"
 
     long = bool(text_idx) and len(set(dates)) < len(data_rows) * 0.95
 
-    # 4. wide tables often repeat the same ending in every header - trim it
+    # 4. wide tables often repeat the same ending in every header; trim it
     if not long and len(num_idx) >= 3:
         suf = num_names[num_idx[0]]
         for c in num_idx:
@@ -445,9 +442,9 @@ def build_series(tables: list[Table]) -> list[Series]:
             if split_names:
                 grouped = sub.groupby(split_names + ["__date"], dropna=False)[col].sum()
                 for gkey, ser in grouped.groupby(level=list(range(len(split_names)))):
-                    gname = " · ".join(str(x) for x in (gkey if isinstance(gkey, tuple) else (gkey,)))
+                    gname = " - ".join(str(x) for x in (gkey if isinstance(gkey, tuple) else (gkey,)))
                     s = ser.droplevel(list(range(len(split_names))))
-                    base = f"{gname} · {col}"
+                    base = f"{gname} - {col}"
                     out.append(Series(f"{t.tid}::{base}", base, t, col, s.sort_index(), detect_freq(list(s.index))))
             else:
                 s = sub.groupby("__date")[col].sum().sort_index()
@@ -485,7 +482,7 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
                         groups: list[ShareGroup], grain: str = "auto", mode: str = "level",
                         method: str = "pearson", overlap: str = "pair",
                         exclude_future: bool = True) -> Result:
-    """The heart of it: put everything on one calendar, then correlate."""
+    """Put every series on one calendar, then correlate each pair."""
     log = []
     live = [s for s in series if include.get(s.key, False)]
     needed = {k for g in groups for k in g.members}
@@ -499,23 +496,24 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
         if not t.long:
             continue
         dims = [t.date_name] + [c["name"] for c in t.text_cols]
-        dim_txt = " × ".join(dims[:4]) + f" × {len(dims)-4} more columns" if len(dims) > 5 else " × ".join(dims)
+        dim_txt = (", ".join(dims[:4]) + f" and {len(dims)-4} more columns" if len(dims) > 5
+                   else ", ".join(dims[:-1]) + " and " + dims[-1])
         sp = [t.text_cols[i]["name"] for i in t.split if i < len(t.text_cols)]
         summed = [c["name"] for i, c in enumerate(t.text_cols) if i not in t.split and t.filters.get(i) == "__all"]
         totals = [c["name"] for i, c in enumerate(t.text_cols)
                   if i not in t.split and t.filters.get(i, "__all") != "__all" and TOTALISH.match(str(t.filters.get(i)))]
-        txt = f"**{t.label}** has one row per {dim_txt} (called *long format*). I turned it into "
-        txt += f"one series per **{' × '.join(sp)}**" if sp else "a single series"
+        txt = f"**{t.label}** is in long format (one row per {dim_txt}). Split into "
+        txt += f"one series per **{' / '.join(sp)}**" if sp else "a single series"
         if summed:
             shown = ", ".join(summed[:3]) + (f" and {len(summed)-3} other columns" if len(summed) > 3 else "")
-            txt += f", adding up all the **{shown}** rows"
+            txt += f", summing across **{shown}**"
         if totals:
-            txt += f". I used only the **Total** rows for {', '.join(totals)} so nothing is counted twice"
+            txt += f". Only the **Total** rows were used for {', '.join(totals)} to avoid double counting"
         log.append({"kind": "did", "text": txt + "."})
     sufs = [t for t in tables.values() if t.suffix_note]
     if sufs:
         extra = f" (and similar in {len(sufs)-1} other table{'s' if len(sufs) > 2 else ''})" if len(sufs) > 1 else ""
-        log.append({"kind": "did", "text": f"Shortened series names by removing the repeated ending “{sufs[0].suffix_note}”{extra}."})
+        log.append({"kind": "did", "text": f'Removed the repeated ending "{sufs[0].suffix_note}" from series names{extra}.'})
 
     if grain == "auto":
         grain = max((s.freq for s in basis), key=GRAIN_ORDER.index) if basis else "month"
@@ -566,18 +564,18 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
             include[label] = include.get(label, True)
             share_meta[label] = {"share": True, "derived_from": name_of[k], "group": g.gid}
         log.append({"kind": "did",
-                    "text": f"Created **Share of {g.label}**: each of the {len(members)} series divided by their "
-                            f"combined total, per {GRAIN_NOUN[grain]}, as a %."})
+                    "text": f"Created **Share of {g.label}**: each of the {len(members)} series as a % of their "
+                            f"combined total in each {GRAIN_NOUN[grain]}."})
 
     freqs = sorted({s.freq for s in basis}, key=GRAIN_ORDER.index)
     if len(freqs) > 1:
         log.append({"kind": "did", "text":
-                    f"Your data comes in {' and '.join('**'+FREQ_WORD[f]+'**' for f in freqs)} form. A week can't be "
-                    f"lined up with a month, so everything was rolled up to a **{FREQ_WORD[grain]}** calendar. Counts "
-                    f"and money are *added up* within each {GRAIN_NOUN[grain]}; rates and scores are *averaged*."})
+                    f"The data mixes {' and '.join('**'+FREQ_WORD[f]+'**' for f in freqs)} series, so everything was "
+                    f"rolled up to a **{FREQ_WORD[grain]}** calendar. Counts and spend are summed within each "
+                    f"{GRAIN_NOUN[grain]}; rates and scores are averaged."})
     elif freqs:
-        extra = f", and I rolled it up to **{FREQ_WORD[grain]}** as you asked" if grain != freqs[0] else ""
-        log.append({"kind": "info", "text": f"Everything is already **{FREQ_WORD[freqs[0]]}**{extra}."})
+        extra = f", rolled up to **{FREQ_WORD[grain]}** as selected" if grain != freqs[0] else ""
+        log.append({"kind": "info", "text": f"All series are **{FREQ_WORD[freqs[0]]}**{extra}."})
     if grain == "week":
         log.append({"kind": "info", "text": "Weeks that start on a Sunday and weeks that start on a Monday are treated as the same week."})
     elif any(s.freq == "week" for s in basis):
@@ -587,7 +585,7 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
         log.append({"kind": "warn", "text":
                     f"Dropped {len(partial)} half-covered period{'' if len(partial) == 1 else 's'} at the start or end "
                     f"of a series, where the data only covered part of the {GRAIN_NOUN[grain]}. Keeping them would make "
-                    f"the total look falsely low. ({ex}{'…' if len(partial) > 3 else ''})"})
+                    f"the total look falsely low. ({ex}{'...' if len(partial) > 3 else ''})"})
     if future:
         fs = sorted(future)
         log.append({"kind": "warn", "text":
@@ -619,7 +617,7 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
     if dropped:
         shown = ", ".join(f"**{d[0][:40]}** ({d[1]})" for d in dropped[:4])
         more = f" and {len(dropped)-4} more" if len(dropped) > 4 else ""
-        log.append({"kind": "warn", "text": f"Left out {shown}{more}, because correlation needs numbers that vary."})
+        log.append({"kind": "warn", "text": f"Left out {shown}{more}: correlation needs values that vary."})
 
     if not cols:
         empty = pd.DataFrame()
@@ -658,7 +656,7 @@ def align_and_correlate(series: list[Series], names: dict, aggs: dict, include: 
     if mode == "pct":
         log.append({"kind": "did", "text":
                     f"Compared **% change** from one {GRAIN_NOUN[grain]} to the next instead of raw levels. This tests "
-                    f"whether the *moves* line up, not just the long-term direction."})
+                    f"whether period-to-period changes line up, not only the long-term direction."})
 
     work = values[mask] if mask is not None else values
     labels = list(work.columns)
@@ -749,7 +747,7 @@ def ranked_pairs(res: Result, target: str | None):
 
 
 def findings(res: Result, target: str | None, method: str, mode: str) -> list[dict]:
-    """Plain-English cards about what is in the data."""
+    """Summary cards for the findings panel."""
     out = []
     G = GRAIN_NOUN[res.grain]
     items = ranked_pairs(res, target)
@@ -760,7 +758,7 @@ def findings(res: Result, target: str | None, method: str, mode: str) -> list[di
                     f"**{it['a']}** and **{it['b']}** have {strength_word(it['r'])} "
                     f"{'positive' if it['r'] > 0 else 'negative'} link (r = {it['r']:.2f}). "
                     f"{'When one goes up, the other usually goes up too.' if it['r'] > 0 else 'When one goes up, the other usually goes down.'} "
-                    f"About **{round(it['r']**2*100)}%** of the ups and downs line up (r²). With {it['n']} {G}s of data, "
+                    f"About **{round(it['r']**2*100)}%** of the variation is shared (r²). With {it['n']} {G}s of data, "
                     f"it's {p_words(it['p'], it['n'])}."})
 
     if target and target in res.values.columns:
@@ -781,10 +779,10 @@ def findings(res: Result, target: str | None, method: str, mode: str) -> list[di
         leads.sort(key=lambda t: -abs(t[1][0]))
         for a, (r, n, p, L) in [(x[0], x[1]) for x in leads[:2]]:
             r0 = next(x[2] for x in leads if x[0] == a)
-            out.append({"kind": f"Early signal · {L} {G}{'s' if L > 1 else ''} ahead", "tone": "accent", "text":
+            out.append({"kind": f"Leading indicator: {L} {G}{'s' if L > 1 else ''} ahead", "tone": "accent", "text":
                         f"**{a}** lines up better with **{target}** **{L} {G}{'s' if L > 1 else ''} later** "
-                        f"(r = {r:.2f}) than in the same {G} (r = {r0:.2f}). It may work as an early warning, or its "
-                        f"effect may take time to show."})
+                        f"(r = {r:.2f}) than in the same {G} (r = {r0:.2f}). It may be a leading indicator, or its "
+                        f"effect may be delayed."})
         none = [i["a"] for i in items if abs(i["r"]) < 0.1]
         if none:
             shown = ", ".join(f"**{x}**" for x in none[:3])
@@ -798,10 +796,10 @@ def findings(res: Result, target: str | None, method: str, mode: str) -> list[di
     if trends:
         lines = []
         for k, v in trends:
-            arrow = "↗" if v["trend_r"] > 0 else "↘"
+            direction = "rising" if v["trend_r"] > 0 else "falling"
             chg = (f"{v['change_pct']:+.0f}% from {period_label(v['first'], res.grain)} to "
                    f"{period_label(v['last'], res.grain)}") if np.isfinite(v.get("change_pct", np.nan)) else ""
-            lines.append(f"- {arrow} **{k}** {chg}")
+            lines.append(f"- **{k}**: {chg or direction}")
         out.append({"kind": "Clear trends over time", "tone": "plain",
                     "text": "These series rise or fall steadily across the whole period:\n" + "\n".join(lines)})
 
@@ -818,20 +816,20 @@ def findings(res: Result, target: str | None, method: str, mode: str) -> list[di
             if np.isfinite(rp) and abs(rp) < abs(it["r"]) - 0.3:
                 shared.append(it)
         if shared:
-            pairs = "; ".join(f"**{i['a']}** × **{i['b']}**" for i in shared[:3])
-            out.append({"kind": "Watch out: shared trend", "tone": "warn", "text":
-                        f"Some links may exist only because both numbers trend over time: {pairs}. When you compare % "
-                        f"changes instead, the link mostly disappears. Try switching *Compare* to **% change**."})
+            pairs = "; ".join(f"**{i['a']}** vs **{i['b']}**" for i in shared[:3])
+            out.append({"kind": "Shared trend", "tone": "warn", "text":
+                        f"These links may come from both series trending over time: {pairs}. Compared on % change, "
+                        f"most of the link goes away. Set *Compare* to **% change** to check."})
     small = [i for i in top if i["n"] < 12]
     if small:
-        out.append({"kind": "Watch out: little data", "tone": "warn",
+        out.append({"kind": "Small sample", "tone": "warn",
                     "text": f"{len(small)} of these pairs overlap for fewer than 12 {G}s. Treat them as hints, not proof."})
     if any(v.get("share") for v in res.meta.values()):
         out.append({"kind": "About share series", "tone": "plain", "text":
                     "Shares in the same group add up to 100%, so when one brand's share goes up, another's must go "
                     "down. Negative links between them are built into the math."})
-    out.append({"kind": "Remember", "tone": "plain", "text":
-                "Correlation shows what moves together, not what causes what. Use these results to decide what to test next."})
+    out.append({"kind": "Caveat", "tone": "plain", "text":
+                "Correlation does not show causation. Use these results to decide what to test next."})
     return out
 
 

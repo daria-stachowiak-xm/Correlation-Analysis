@@ -1,8 +1,8 @@
 """
-Correlation Lab - a Streamlit app that lines up messy marketing data and
-explains which numbers move together, in plain English.
+Correlation Lab: Streamlit front end. Aligns marketing data from different
+sources and shows which series move together.
 
-Run it with:  streamlit run app.py
+Run with:  streamlit run app.py
 """
 from __future__ import annotations
 
@@ -16,27 +16,35 @@ import streamlit as st
 
 import corrlab as cl
 
-BLUE, ORANGE, INK = "#2a78d6", "#eb6834", "#434a59"
+# Crossmedia palette. To re-theme, change these, the CSS below and .streamlit/config.toml.
+RED = "#E4002B"        # Crossmedia red: accents, positive correlation, created series
+CHARCOAL = "#2B2B2B"   # headings, uploaded series
+SLATE = "#6B7178"      # negative correlation
+GRID = "#E6E6E6"       # chart gridlines
 
-st.set_page_config(page_title="Correlation Lab", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Correlation Lab", layout="wide")
 
 st.markdown("""
 <style>
-  .block-container {padding-top: 2.2rem; max-width: 1400px;}
-  h1, h2, h3 {letter-spacing: -0.01em;}
-  .step-no {font-family: ui-monospace, monospace; font-size: 0.72rem; letter-spacing: .12em;
-            text-transform: uppercase; color: #6b7280;}
-  .why {color: #434a59; max-width: 78ch;}
-  .card {border: 1px solid #e3e6ec; border-radius: 10px; padding: .7rem .9rem; margin-bottom: .6rem;
-         background: var(--background-color);}
-  .card .k {font-family: ui-monospace, monospace; font-size: .68rem; letter-spacing: .08em;
-            text-transform: uppercase; color: #6b7280; margin-bottom: .2rem;}
-  .card.warn {background: #fff6e2; border-color: #f0dcb0;}
-  .card.accent {border-color: #c9cbf5;}
-  .stat {background: #f1f3f7; border-radius: 9px; padding: .5rem .7rem;}
-  .stat .l {font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: #6b7280;}
-  .stat .v {font-family: ui-monospace, monospace; font-size: 1.35rem;}
-  .stat .d {font-size: .76rem; color: #434a59; line-height: 1.25;}
+  .block-container {padding-top: 3.6rem; max-width: 1400px;}
+  h1, h2, h3 {letter-spacing: -0.01em; color: #2B2B2B;}
+  .step-no {font-size: 0.72rem; font-weight: 700; letter-spacing: .12em;
+            text-transform: uppercase; color: #E4002B;}
+  .why {color: #4A4A4A; max-width: 78ch;}
+  .k {font-size: .68rem; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: #E4002B; margin-bottom: .2rem;}
+  .tag {display: inline-block; min-width: 3.2rem; font-size: .64rem; font-weight: 700; letter-spacing: .06em;
+        text-transform: uppercase; text-align: center; padding: 0 .35rem; margin-right: .5rem;
+        border-radius: 3px; border: 1px solid currentColor; vertical-align: 1px;}
+  .tag.info {color: #6B7178;}
+  .tag.did {color: #2B2B2B;}
+  .tag.warn {color: #E4002B;}
+  .note {background: #F4F4F4; border-left: 3px solid #E4002B; border-radius: 4px; padding: .7rem 1rem;
+         margin-bottom: 1rem; color: #2B2B2B;}
+  .stat {background: #F4F4F4; border-left: 3px solid #E4002B; border-radius: 4px; padding: .5rem .7rem; margin-bottom: 1rem;}
+  .stat .l {font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: #6B7178;}
+  .stat .v {font-family: ui-monospace, monospace; font-size: 1.35rem; color: #2B2B2B;}
+  .stat .d {font-size: .76rem; color: #4A4A4A; line-height: 1.25;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -67,7 +75,7 @@ def load_sample():
         S.groups.append(cl.ShareGroup(f"g{uuid.uuid4().hex[:6]}", "Search", search))
     orders = next((s for s in series if s.base == "Orders"), None)
     if orders:
-        S.target = cl.build_series(S.tables) and S.names.get(orders.key, orders.base)
+        S.target = S.names.get(orders.key, orders.base)
 
 
 def init_meta(series):
@@ -95,20 +103,20 @@ if not S.tables and not S.sample_loaded:
 left, right = st.columns([1.35, 1])
 with left:
     st.markdown("<div class='step-no'>Correlation Lab</div>", unsafe_allow_html=True)
-    st.title("Find out which of your numbers move together")
-    st.markdown("<p class='why'>Drop in spreadsheets from different tools. The app lines them up by name and by "
-                "date, builds the extra measures you need (like Share of Search), and explains every result in "
-                "plain English. No statistics background needed.</p>", unsafe_allow_html=True)
+    st.title("Which metrics move together")
+    st.markdown("<p class='why'>Upload exports from different tools. The app matches series by name and date, "
+                "builds share metrics such as Share of Search, and reports which series are correlated and how "
+                "strongly.</p>", unsafe_allow_html=True)
 with right:
     rng = np.random.default_rng(3)
     demo = go.Figure()
-    for k, (rho, title) in enumerate([(0.9, "r ≈ +0.9<br>rise together"), (0.0, "r ≈ 0<br>no pattern"),
-                                      (-0.85, "r ≈ −0.85<br>one up, one down")]):
+    for k, (rho, title) in enumerate([(0.9, "r = +0.9<br>rise together"), (0.0, "r = 0<br>no pattern"),
+                                      (-0.85, "r = -0.85<br>move opposite")]):
         x = rng.standard_normal(34)
         y = rho * x + np.sqrt(1 - rho ** 2) * rng.standard_normal(34)
-        demo.add_trace(go.Scatter(x=x + k * 8, y=y, mode="markers", marker=dict(size=6, color=BLUE, opacity=.85),
+        demo.add_trace(go.Scatter(x=x + k * 8, y=y, mode="markers", marker=dict(size=6, color=RED, opacity=.85),
                                   hoverinfo="skip", showlegend=False))
-        demo.add_annotation(x=k * 8, y=-4.4, text=title, showarrow=False, font=dict(size=11, color=INK))
+        demo.add_annotation(x=k * 8, y=-4.4, text=title, showarrow=False, font=dict(size=11, color=CHARCOAL))
     demo.update_layout(height=190, margin=dict(l=0, r=0, t=6, b=0), plot_bgcolor="rgba(0,0,0,0)",
                        paper_bgcolor="rgba(0,0,0,0)", xaxis=dict(visible=False), yaxis=dict(visible=False, range=[-5.6, 3.4]))
     st.plotly_chart(demo, width="stretch", config={"displayModeBar": False})
@@ -117,8 +125,8 @@ with right:
 st.markdown("<div class='step-no'>Step 1</div>", unsafe_allow_html=True)
 st.header("Bring your data")
 st.markdown("<p class='why'>Upload as many CSV or Excel files as you like; each Excel tab is read separately. Every "
-            "table needs a date column and some number columns. Tables with one row per brand or channel "
-            "(long format) are fine too - they get split into separate series.</p>", unsafe_allow_html=True)
+            "table needs a date column and at least one numeric column. Long tables (one row per brand or "
+            "channel) are split into separate series.</p>", unsafe_allow_html=True)
 
 up_col, btn_col = st.columns([3, 1])
 with up_col:
@@ -139,7 +147,7 @@ if uploads:
         if any(t.sample for t in S.tables):        # first real upload replaces the example
             S.tables, S.names, S.aggs, S.include, S.groups = [], {}, {}, {}, []
             S.target, S.pair = "", None
-        with st.spinner("Reading files…"):
+        with st.spinner("Reading files..."):
             for u in fresh:
                 S.seen_files.add(u.file_id)
                 try:
@@ -152,23 +160,23 @@ if uploads:
         st.rerun()
 
 if any(t.sample for t in S.tables):
-    st.info("**You're looking at example data** for a made-up granola brand, Harbor Crunch, and three made-up "
-            "competitors. Upload your own files and the example is replaced.")
+    st.markdown("<div class='note'><b>Example data.</b> A fictional granola brand, Harbor Crunch, and three "
+                "fictional competitors. Uploading your own files replaces it.</div>", unsafe_allow_html=True)
 
 if not S.tables:
     st.warning("No data yet. Upload files or load the example.")
 
 for t in S.tables:
     if t.skip:
-        with st.expander(f"⏭️ {t.label} — skipped", expanded=False):
+        with st.expander(f"{t.label} (skipped)", expanded=False):
             st.caption(t.skip)
             if st.button("Remove", key=f"rm{t.tid}"):
                 S.tables.remove(t)
                 st.rerun()
         continue
-    head = (f"**{t.label}** · {'Long format' if t.long else 'Wide format'} · {cl.FREQ_WORD[t.freq]} · "
-            f"{len(t.frame):,} rows · {t.frame['__date'].min():%b %Y} – {t.frame['__date'].max():%b %Y}"
-            f"{' · example' if t.sample else ''}")
+    head = (f"**{t.label}** | {'long' if t.long else 'wide'} format | {cl.FREQ_WORD[t.freq]} | "
+            f"{len(t.frame):,} rows | {t.frame['__date'].min():%b %Y} to {t.frame['__date'].max():%b %Y}"
+            f"{' | example' if t.sample else ''}")
     with st.expander(head, expanded=False):
         if t.long and t.text_cols:
             names = [c["name"] for c in t.text_cols]
@@ -238,32 +246,34 @@ G = cl.GRAIN_NOUN[res.grain]
 
 log_col, cov_col = st.columns([1, 1])
 with log_col:
-    st.subheader("What I did to your data")
-    icon = {"info": "ℹ️", "did": "✅", "warn": "⚠️"}
+    st.subheader("Processing log")
+    tag = {"info": "Note", "did": "Done", "warn": "Check"}
     for entry in res.log:
-        st.markdown(f"{icon[entry['kind']]} {entry['text']}")
+        st.markdown(f"<span class='tag {entry['kind']}'>{tag[entry['kind']]}</span>{entry['text']}",
+                    unsafe_allow_html=True)
 with cov_col:
     st.subheader("When each series has data")
-    st.caption("Each bar shows when a series has data. Correlation only uses periods where both series have values.")
+    st.caption("Dark bars are uploaded series; red bars are shares created in step 3. The shaded band is the "
+               "window where every series has data.")
     if labels:
         rows = []
         for lab in labels[:40]:
             s = res.levels[lab].dropna()
             if len(s):
-                rows.append(dict(Series=cl.fmt_num and lab[:38], Start=s.index[0].start_time,
+                rows.append(dict(Series=lab[:38], Start=s.index[0].start_time,
                                  End=s.index[-1].end_time, Kind="Created" if res.meta[lab].get("share") else "Uploaded"))
         cov = go.Figure()
         for i, r in enumerate(rows):
             cov.add_trace(go.Scatter(x=[r["Start"], r["End"]], y=[i, i], mode="lines",
-                                     line=dict(color=ORANGE if r["Kind"] == "Created" else BLUE, width=9),
+                                     line=dict(color=RED if r["Kind"] == "Created" else CHARCOAL, width=9),
                                      hovertemplate=f"{r['Series']}<br>%{{x|%b %Y}}<extra></extra>", showlegend=False))
         if res.common:
             cov.add_vrect(x0=res.common[0].start_time, x1=res.common[1].end_time,
-                          fillcolor="#3a3fb3", opacity=0.07, line_width=0)
+                          fillcolor=RED, opacity=0.06, line_width=0)
         cov.update_layout(height=max(180, 22 * len(rows) + 40), margin=dict(l=0, r=10, t=10, b=10),
                           yaxis=dict(tickmode="array", tickvals=list(range(len(rows))),
                                      ticktext=[r["Series"] for r in rows], autorange="reversed"),
-                          xaxis=dict(showgrid=True, gridcolor="#eceef3"),
+                          xaxis=dict(showgrid=True, gridcolor=GRID),
                           plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(cov, width="stretch", config={"displayModeBar": False})
 
@@ -282,7 +292,7 @@ if sugg:
     cols = st.columns(min(4, len(sugg[:8])))
     for i, g in enumerate(sugg[:8]):
         with cols[i % len(cols)]:
-            if st.button(f"➕ Share of {g['label']}", key=f"sg{i}", help=f"{len(g['members'])} series from {g['from']}"):
+            if st.button(f"Add Share of {g['label']}", key=f"sg{i}", help=f"{len(g['members'])} series from {g['from']}"):
                 S.groups.append(cl.ShareGroup(f"g{uuid.uuid4().hex[:6]}", g["label"], g["members"]))
                 st.rerun()
 
@@ -307,10 +317,11 @@ with st.expander("Build a share from any series you pick"):
 # ---------------------------------------------------------------- step 4: series
 st.divider()
 st.markdown("<div class='step-no'>Step 4</div>", unsafe_allow_html=True)
-st.header("Choose what to compare, and name things consistently")
-st.markdown("<p class='why'>Tick the series to include, and <b>rename them so names match across files</b> - if one "
-            "file says “Hellman's” and another “Hellmann's”, give them the same name. Counts and money are added up "
-            "when rolling periods together; rates, scores and percentages are averaged.</p>", unsafe_allow_html=True)
+st.header("Choose and rename series")
+st.markdown("<p class='why'>Tick the series to include and <b>rename them so names match across files</b>. If one "
+            "file says \"Hellman's\" and another says \"Hellmann's\", give both the same name. When periods are "
+            "rolled up, counts and spend are summed; rates, scores and percentages are averaged.</p>",
+            unsafe_allow_html=True)
 
 editor_df = pd.DataFrame([{
     "Use": S.include.get(s.key, False),
@@ -318,7 +329,7 @@ editor_df = pd.DataFrame([{
     "Combine by": "Average" if S.aggs.get(s.key, "sum") == "mean" else "Add up",
     "Source": s.table.label,
     "Values": f"{len(s.data)} {cl.FREQ_WORD[s.freq]}",
-    "Covers": f"{s.data.index.min():%b %Y} – {s.data.index.max():%b %Y}",
+    "Covers": f"{s.data.index.min():%b %Y} to {s.data.index.max():%b %Y}",
     "_key": s.key,
 } for s in series])
 
@@ -358,38 +369,39 @@ if len(editor_df):
 # ---------------------------------------------------------------- step 5: goal & findings
 st.divider()
 st.markdown("<div class='step-no'>Step 5</div>", unsafe_allow_html=True)
-st.header("What do you want to find out?")
-st.markdown("<p class='why'>Pick the number you care about most (sales, sign-ups, awareness) and everything else is "
-            "ranked by how closely it moves with it. Or leave it open and see what stands out.</p>",
+st.header("Goal metric and findings")
+st.markdown("<p class='why'>Pick the metric you care about most (sales, sign-ups, awareness) to rank every other "
+            "series by how closely it tracks it. With no goal set, the strongest pairs overall are shown.</p>",
             unsafe_allow_html=True)
 
-target = st.selectbox("My goal", ["Just show me what's interesting"] + labels,
+NO_GOAL = "None (show strongest pairs)"
+target = st.selectbox("Goal metric", [NO_GOAL] + labels,
                       index=(labels.index(S.target) + 1) if S.target in labels else 0)
-S.target = "" if target.startswith("Just show me") else target
+S.target = "" if target == NO_GOAL else target
 target_key = S.target or None
 
 rank_col, card_col = st.columns([1.2, 1])
 items = cl.ranked_pairs(res, target_key) if labels else []
 with rank_col:
-    st.subheader(f"What moves with {target_key}" if target_key else "Strongest links in your data")
-    st.caption("Longer bars mean a closer link. Blue moves the same way, red the opposite way. "
-               "Faded bars could be chance (p ≥ 0.05).")
+    st.subheader(f"Correlation with {target_key}" if target_key else "Strongest pairs")
+    st.caption("Longer bars mean a closer link. Red bars move in the same direction, grey bars in opposite "
+               "directions. Faded bars may be chance (p ≥ 0.05).")
     top = items[:12]
     if top:
-        names_ = [(it["a"] if target_key else f"{it['a']} × {it['b']}") for it in top][::-1]
+        names_ = [(it["a"] if target_key else f"{it['a']} vs {it['b']}") for it in top][::-1]
         vals = [it["r"] for it in top][::-1]
         ps = [it["p"] for it in top][::-1]
         ns = [it["n"] for it in top][::-1]
         bar = go.Figure(go.Bar(
             x=vals, y=[f"{n[:52]} " for n in names_], orientation="h",
-            marker=dict(color=[BLUE if v >= 0 else "#e34948" for v in vals],
+            marker=dict(color=[RED if v >= 0 else SLATE for v in vals],
                         opacity=[1 if p < 0.05 else 0.45 for p in ps]),
             text=[f"{v:+.2f}" for v in vals], textposition="outside",
             customdata=np.stack([ns, ps], axis=-1),
-            hovertemplate="r = %{x:.2f}<br>%{customdata[0]} " + G + "s · p = %{customdata[1]:.3f}<extra></extra>"))
+            hovertemplate="r = %{x:.2f}<br>%{customdata[0]} " + G + "s, p = %{customdata[1]:.3f}<extra></extra>"))
         bar.update_layout(height=max(240, 34 * len(top)), margin=dict(l=0, r=30, t=6, b=6),
-                          xaxis=dict(range=[-1.15, 1.15], zeroline=True, zerolinecolor="#c6ccd8",
-                                     gridcolor="#eceef3", title="correlation (r)"),
+                          xaxis=dict(range=[-1.15, 1.15], zeroline=True, zerolinecolor="#BDBDBD",
+                                     gridcolor=GRID, title="correlation (r)"),
                           plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(bar, width="stretch", config={"displayModeBar": False})
     else:
@@ -406,10 +418,10 @@ with card_col:
 # ---------------------------------------------------------------- step 6: matrix
 st.divider()
 st.markdown("<div class='step-no'>Step 6</div>", unsafe_allow_html=True)
-st.header("The correlation matrix")
-st.markdown("<p class='why'>A grid comparing every series with every other. Each square is the <b>r</b> for that "
-            "pair: blue means they rise together, red means one rises as the other falls, pale means no clear link. "
-            "The grid is a mirror image, so only half is shown. <b>Click a square</b> to open that pair.</p>",
+st.header("Correlation matrix")
+st.markdown("<p class='why'>Every series compared with every other. Each cell is the <b>r</b> for that pair: red "
+            "means they rise together, grey means one rises as the other falls, white means no clear link. The "
+            "grid is symmetric, so only the lower half is shown. <b>Click a cell</b> to open that pair below.</p>",
             unsafe_allow_html=True)
 
 if len(labels) >= 2:
@@ -427,11 +439,11 @@ if len(labels) >= 2:
     short = [f"{i+1}. {l[:34]}" for i, l in enumerate(order)]
     heat = go.Figure(go.Heatmap(
         z=Z.values, x=[str(i + 1) for i in range(len(order))], y=short,
-        colorscale="RdBu", zmid=0, zmin=-1, zmax=1, xgap=2, ygap=2,
+        colorscale=[[0, SLATE], [0.5, "#FFFFFF"], [1, RED]], zmid=0, zmin=-1, zmax=1, xgap=2, ygap=2,
         text=text.values, texttemplate="%{text}", textfont=dict(size=10),
         customdata=np.dstack([N.values, P.values]),
-        hovertemplate="r = %{z:.2f}<br>%{y} × column %{x}<br>%{customdata[0]} " + G +
-                      "s · p = %{customdata[1]:.3f}<extra></extra>",
+        hovertemplate="r = %{z:.2f}<br>%{y} vs column %{x}<br>%{customdata[0]} " + G +
+                      "s, p = %{customdata[1]:.3f}<extra></extra>",
         colorbar=dict(title="r", thickness=12)))
     heat.update_layout(height=max(360, 30 * len(order) + 120), margin=dict(l=0, r=0, t=10, b=10),
                        xaxis=dict(side="top", tickfont=dict(size=10)), yaxis=dict(autorange="reversed"),
@@ -448,7 +460,7 @@ if len(labels) >= 2:
     except Exception:                                    # noqa: BLE001
         pass
 
-    st.subheader("Look at one pair")
+    st.subheader("Pair detail")
     if not S.pair or S.pair[0] not in labels or S.pair[1] not in labels:
         S.pair = (items[0]["a"], items[0]["b"]) if items else (labels[0], labels[1])
     pa, pb = st.columns(2)
@@ -468,17 +480,17 @@ if len(labels) >= 2:
         for col, l, v, d in [
             (s1, "r", f"{r:+.2f}", f"{cl.strength_word(r).replace('a ', '').replace('an ', '')}"
                                    f"{', same direction' if r > 0 else ', opposite directions' if abs(r) >= .1 else ''}"),
-            (s2, "r²", f"{round(r*r*100)}%", "of the ups and downs line up"),
+            (s2, "r²", f"{round(r*r*100)}%", "of the variation is shared"),
             (s3, "p-value", f"{p:.3f}" if p >= 0.001 else "<0.001",
              "probably not chance" if p < 0.05 else "could be chance"),
             (s4, "n", f"{n}", f"{G}s compared")]:
             col.markdown(f"<div class='stat'><div class='l'>{l}</div><div class='v'>{v}</div>"
                          f"<div class='d'>{d}</div></div>", unsafe_allow_html=True)
 
-        plain = ("these two don't move together in any consistent way." if abs(r) < 0.1 else
-                 f"when **{a}** is higher than usual, **{b}** tends to be higher too." if r > 0 else
-                 f"when **{a}** is higher than usual, **{b}** tends to be lower.")
-        st.markdown(f"\n**In plain English:** {plain} About **{round(r*r*100)}%** of the variation in one lines up "
+        plain = ("These two don't move together in any consistent way." if abs(r) < 0.1 else
+                 f"When **{a}** is higher than usual, **{b}** tends to be higher too." if r > 0 else
+                 f"When **{a}** is higher than usual, **{b}** tends to be lower.")
+        st.markdown(f"\n**Summary:** {plain} About **{round(r*r*100)}%** of the variation in one lines up "
                     f"with the other; the other {100-round(r*r*100)}% comes from things not in this pair. "
                     f"With {n} {G}s, this result is {cl.p_words(p, n)}."
                     + (f"\n\nCheck: comparing {'raw levels' if mode == 'pct' else '% changes'} instead gives "
@@ -490,7 +502,7 @@ if len(labels) >= 2:
         with g1:
             d = cl.pair_points(res, a, b)
             sc = go.Figure(go.Scatter(x=d["x"], y=d["y"], mode="markers",
-                                      marker=dict(size=9, color=BLUE, line=dict(width=1.5, color="white")),
+                                      marker=dict(size=9, color=RED, line=dict(width=1.5, color="white")),
                                       text=[cl.period_label(i, res.grain) for i in d.index],
                                       hovertemplate="%{text}<br>" + a[:30] + ": %{x:,.4g}<br>" + b[:30] +
                                                     ": %{y:,.4g}<extra></extra>"))
@@ -498,11 +510,11 @@ if len(labels) >= 2:
                 sl, ic = np.polyfit(d["x"], d["y"], 1)
                 xs = np.array([d["x"].min(), d["x"].max()])
                 sc.add_trace(go.Scatter(x=xs, y=sl * xs + ic, mode="lines", hoverinfo="skip",
-                                        line=dict(color=INK, dash="dash", width=2), showlegend=False))
+                                        line=dict(color=CHARCOAL, dash="dash", width=2), showlegend=False))
             sc.update_layout(height=340, margin=dict(l=0, r=6, t=30, b=0), showlegend=False,
                              title=dict(text=f"Each dot is one {G}", font=dict(size=14)),
-                             xaxis=dict(title=a[:40], gridcolor="#eceef3"),
-                             yaxis=dict(title=b[:40], gridcolor="#eceef3"),
+                             xaxis=dict(title=a[:40], gridcolor=GRID),
+                             yaxis=dict(title=b[:40], gridcolor=GRID),
                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(sc, width="stretch", config={"displayModeBar": False})
             st.caption("A band going up to the right means they rise together; down means opposite directions; "
@@ -512,15 +524,15 @@ if len(labels) >= 2:
             t_idx = res.values.index.to_timestamp()
             tl = go.Figure()
             tl.add_trace(go.Scatter(x=t_idx, y=z(res.values[a]), name=a[:34], mode="lines",
-                                    line=dict(color=BLUE, width=2),
+                                    line=dict(color=CHARCOAL, width=2),
                                     customdata=res.values[a], hovertemplate="%{customdata:,.4g}<extra>" + a[:30] + "</extra>"))
             tl.add_trace(go.Scatter(x=t_idx, y=z(res.values[b]), name=b[:34], mode="lines",
-                                    line=dict(color=ORANGE, width=2),
+                                    line=dict(color=RED, width=2),
                                     customdata=res.values[b], hovertemplate="%{customdata:,.4g}<extra>" + b[:30] + "</extra>"))
             tl.update_layout(height=340, margin=dict(l=0, r=6, t=30, b=0), hovermode="x unified",
                              title=dict(text="Both over time (rescaled to one axis)", font=dict(size=14)),
-                             legend=dict(orientation="h", y=-0.18), yaxis=dict(title="vs average", gridcolor="#eceef3"),
-                             xaxis=dict(gridcolor="#eceef3"),
+                             legend=dict(orientation="h", y=-0.18), yaxis=dict(title="vs average", gridcolor=GRID),
+                             xaxis=dict(gridcolor=GRID),
                              plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(tl, width="stretch", config={"displayModeBar": False})
             st.caption("Each line is rescaled so both share one axis. Check whether the peaks and dips happen together.")
@@ -528,13 +540,13 @@ if len(labels) >= 2:
         lags = [(L,) + cl.corr_pair(res.values[a], res.values[b], lag=L, method=method) for L in range(-3, 4)]
         lab = [f"B {abs(L)} earlier" if L < 0 else "same " + G if L == 0 else f"A {L} earlier" for L, _, _, _ in lags]
         lg = go.Figure(go.Bar(x=lab, y=[x[1] for x in lags],
-                              marker_color=[BLUE if (x[1] or 0) >= 0 else "#e34948" for x in lags],
+                              marker_color=[RED if np.isfinite(x[1]) and x[1] >= 0 else SLATE for x in lags],
                               text=[f"{x[1]:+.2f}" if np.isfinite(x[1]) else "" for x in lags],
                               textposition="outside",
                               hovertemplate="r = %{y:.2f}<extra></extra>"))
         lg.update_layout(height=240, margin=dict(l=0, r=6, t=30, b=0),
                          title=dict(text="Does one lead the other?", font=dict(size=14)),
-                         yaxis=dict(range=[-1.2, 1.2], gridcolor="#eceef3", zerolinecolor="#c6ccd8"),
+                         yaxis=dict(range=[-1.2, 1.2], gridcolor=GRID, zerolinecolor="#BDBDBD"),
                          plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(lg, width="stretch", config={"displayModeBar": False})
         best = max((x for x in lags if np.isfinite(x[1]) and x[2] >= 6), key=lambda x: abs(x[1]), default=None)
@@ -554,14 +566,14 @@ if len(labels) >= 2:
             st.warning(" ".join(notes))
 
     # ------------------------------------------------------------ downloads
-    st.subheader("Take it with you")
+    st.subheader("Downloads")
     d1, d2, d3 = st.columns(3)
     aligned = res.values.copy()
     aligned.index = [cl.period_label(p, res.grain) for p in aligned.index]
     aligned.index.name = "Period"
-    d1.download_button("⬇️ Aligned data (CSV)", aligned.to_csv().encode(), "aligned_data.csv", "text/csv",
+    d1.download_button("Aligned data (CSV)", aligned.to_csv().encode(), "aligned_data.csv", "text/csv",
                        width="stretch")
-    d2.download_button("⬇️ Correlation matrix (CSV)", res.matrix.round(3).to_csv().encode(),
+    d2.download_button("Correlation matrix (CSV)", res.matrix.round(3).to_csv().encode(),
                        "correlation_matrix.csv", "text/csv", width="stretch")
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
@@ -569,25 +581,25 @@ if len(labels) >= 2:
         res.matrix.round(3).to_excel(xw, sheet_name="r")
         res.nmat.to_excel(xw, sheet_name="n (periods)")
         res.pmat.round(4).to_excel(xw, sheet_name="p-values")
-        pd.DataFrame([{"Pair": f"{i['a']} × {i['b']}", "r": round(i["r"], 3), "n": i["n"],
+        pd.DataFrame([{"Pair": f"{i['a']} vs {i['b']}", "r": round(i["r"], 3), "n": i["n"],
                        "p": round(i["p"], 4)} for i in items]).to_excel(xw, sheet_name="Ranked pairs", index=False)
-    d3.download_button("⬇️ Everything (Excel)", buf.getvalue(), "correlation_lab.xlsx",
+    d3.download_button("All results (Excel)", buf.getvalue(), "correlation_lab.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 else:
     st.info("The matrix appears once at least two series are selected.")
 
 # ---------------------------------------------------------------- glossary
 st.divider()
-st.header("Words you'll see")
+st.header("Glossary")
 gloss = {
     "Correlation": "How closely two numbers move together over time. It doesn't say *why* they move together.",
-    "r (correlation coefficient)": "A score from −1 to +1. +1 means they always rise and fall together, 0 means no "
-                                   "pattern, −1 means they always move in opposite directions. Roughly: 0.1 weak, "
+    "r (correlation coefficient)": "A score from -1 to +1. +1 means they always rise and fall together, 0 means no "
+                                   "pattern, -1 means they always move in opposite directions. Roughly: 0.1 weak, "
                                    "0.3 moderate, 0.5 strong, 0.7+ very strong.",
     "r² (r-squared)": "r multiplied by itself, read as a percentage. r = 0.7 gives r² = 0.49, so about half of one "
                       "number's ups and downs line up with the other's.",
     "p-value": "How likely a pattern this strong would appear by pure luck if there were no real link. Below 0.05 is "
-               "the usual bar for “probably real”. With few data points, even a big r can fail it.",
+               "the usual bar for \"probably real\". With few data points, even a big r can fail it.",
     "n": "How many periods were used for a pair. Under about 12, treat results as hints, not proof.",
     "Lag / lead": "One thing may affect another later, e.g. ad spend this month raising searches next month. A lead "
                   "shows up when the correlation gets stronger after shifting one series.",
@@ -597,12 +609,12 @@ gloss = {
              "when unrelated. Switching to % change tests this.",
     "Pearson vs Spearman": "Pearson measures straight-line relationships. Spearman ranks values first, so it catches "
                            "consistent but curved relationships and resists outliers.",
-    "Aligning (taxonomy & time)": "Making names match across files (“Coke” = “Coca-Cola”) and putting every series on "
+    "Aligning (taxonomy & time)": "Making names match across files (\"Coke\" and \"Coca-Cola\") and putting every series on "
                                   "the same calendar over the same range.",
-    "Correlation ≠ causation": "Things moving together doesn't prove one causes the other. A hidden third factor, "
+    "Correlation vs causation": "Things moving together doesn't prove one causes the other. A hidden third factor, "
                                "like the season, can drive both.",
 }
 gc = st.columns(3)
 for i, (term, desc) in enumerate(gloss.items()):
     with gc[i % 3]:
-        st.markdown(f"**{term}**  \n<span style='color:#434a59;font-size:.9rem'>{desc}</span>", unsafe_allow_html=True)
+        st.markdown(f"**{term}**  \n<span style='color:#4A4A4A;font-size:.9rem'>{desc}</span>", unsafe_allow_html=True)
